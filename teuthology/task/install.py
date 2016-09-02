@@ -21,8 +21,8 @@ log = logging.getLogger(__name__)
 RELEASE = "1-0"
 
 
-def _get_gitbuilder_project(ctx, remote, config):
-    return packaging.GitbuilderProject(
+def _get_builder_project(ctx, remote, config):
+    return packaging.get_builder_project()(
         config.get('project', 'ceph'),
         config,
         remote=remote,
@@ -77,19 +77,19 @@ def _update_deb_package_list_and_install(ctx, remote, debs, config):
             stdout=StringIO(),
         )
 
-    gitbuilder = _get_gitbuilder_project(ctx, remote, config)
+    builder = _get_builder_project(ctx, remote, config)
     log.info("Installing packages: {pkglist} on remote deb {arch}".format(
-        pkglist=", ".join(debs), arch=gitbuilder.arch)
+        pkglist=", ".join(debs), arch=builder.arch)
     )
     # get baseurl
-    log.info('Pulling from %s', gitbuilder.base_url)
+    log.info('Pulling from %s', builder.base_url)
 
-    version = gitbuilder.version
+    version = builder.version
     log.info('Package version is %s', version)
 
     remote.run(
         args=[
-            'echo', 'deb', gitbuilder.base_url, gitbuilder.distro, 'main',
+            'echo', 'deb', builder.base_url, builder.distro, 'main',
             run.Raw('|'),
             'sudo', 'tee', '/etc/apt/sources.list.d/{proj}.list'.format(
                 proj=config.get('project', 'ceph')),
@@ -139,6 +139,10 @@ def _yum_fix_repo_host(remote, project):
     """
     Update the hostname to reflect the gitbuilder_host setting.
     """
+    # Skip this bit if we're not using gitbuilder
+    if not isinstance(packaging.get_builder_project(),
+                      packaging.GitbuilderProject):
+        return
     old_host = teuth_config._defaults['gitbuilder_host']
     new_host = teuth_config.gitbuilder_host
     if new_host == old_host:
@@ -217,14 +221,14 @@ def _update_rpm_package_list_and_install(ctx, remote, rpm, config):
     :param config: the config dict
     """
     rpm = _rpm_package_overrides(rpm, remote.os)
-    gitbuilder = _get_gitbuilder_project(ctx, remote, config)
-    log.info('Pulling from %s', gitbuilder.base_url)
-    log.info('Package version is %s', gitbuilder.version)
+    builder = _get_builder_project(ctx, remote, config)
+    log.info('Pulling from %s', builder.base_url)
+    log.info('Package version is %s', builder.version)
     log.info("Installing packages: {pkglist} on remote rpm {arch}".format(
-        pkglist=", ".join(rpm), arch=gitbuilder.arch))
-    dist_release = gitbuilder.dist_release
-    project = gitbuilder.project
-    start_of_url = gitbuilder.base_url
+        pkglist=", ".join(rpm), arch=builder.arch))
+    dist_release = builder.dist_release
+    project = builder.project
+    start_of_url = builder.base_url
     proj_release = '{proj}-release-{release}.{dist_release}.noarch'.format(
         proj=project, release=RELEASE, dist_release=dist_release)
     rpm_name = "{rpm_nm}.rpm".format(rpm_nm=proj_release)
@@ -232,7 +236,7 @@ def _update_rpm_package_list_and_install(ctx, remote, rpm, config):
         start_of_url=start_of_url, rpm_name=rpm_name)
     remote.run(args=['sudo', 'yum', '-y', 'install', base_url])
 
-    uri = gitbuilder.uri_reference
+    uri = builder.uri_reference
     _yum_fix_repo_priority(remote, project, uri)
     _yum_fix_repo_host(remote, project)
     _yum_set_check_obsoletes(remote)
@@ -283,9 +287,9 @@ def verify_package_version(ctx, config, remote):
     if config.get("extras"):
         log.info("Skipping version verification...")
         return True
-    gitbuilder = _get_gitbuilder_project(ctx, remote, config)
-    version = gitbuilder.version
-    pkg_to_check = gitbuilder.project
+    builder = _get_builder_project(ctx, remote, config)
+    version = builder.version
+    pkg_to_check = builder.project
     installed_ver = packaging.get_package_version(remote, pkg_to_check)
     if installed_ver and version in installed_ver:
         msg = "The correct {pkg} version {ver} is installed.".format(
@@ -432,8 +436,8 @@ def _remove_rpm(ctx, config, remote, rpm):
     rpm = _rpm_package_overrides(rpm, remote.os)
     log.info("Removing packages: {pkglist} on rpm system.".format(
         pkglist=", ".join(rpm)))
-    gitbuilder = _get_gitbuilder_project(ctx, remote, config)
-    dist_release = gitbuilder.dist_release
+    builder = _get_builder_project(ctx, remote, config)
+    dist_release = builder.dist_release
     remote.run(
         args=[
             'for', 'd', 'in',
@@ -665,13 +669,13 @@ def _upgrade_deb_packages(ctx, config, remote, debs):
             stdout=StringIO(),
         )
 
-    gitbuilder = _get_gitbuilder_project(ctx, remote, config)
+    builder = _get_builder_project(ctx, remote, config)
     # get distro name and arch
-    dist = gitbuilder.distro
-    base_url = gitbuilder.base_url
+    dist = builder.distro
+    base_url = builder.base_url
     log.info('Pulling from %s', base_url)
 
-    version = gitbuilder.version
+    version = builder.version
     log.info('Package version is %s', version)
 
     remote.run(
@@ -831,18 +835,18 @@ def _upgrade_rpm_packages(ctx, config, remote, pkgs):
     :param pkgs: the RPM packages to be installed
     :param branch: the branch of the project to be used
     """
-    gitbuilder = _get_gitbuilder_project(ctx, remote, config)
+    builder = _get_builder_project(ctx, remote, config)
     log.info(
         "Host {host} is: {distro} {ver} {arch}".format(
             host=remote.shortname,
-            distro=gitbuilder.os_type,
-            ver=gitbuilder.os_version,
-            arch=gitbuilder.arch,)
+            distro=builder.os_type,
+            ver=builder.os_version,
+            arch=builder.arch,)
     )
 
-    base_url = gitbuilder.base_url
+    base_url = builder.base_url
     log.info('Repo base URL: %s', base_url)
-    project = gitbuilder.project
+    project = builder.project
 
     # Remove the -release package before upgrading it
     args = ['sudo', 'rpm', '-ev', '%s-release' % project]
@@ -853,13 +857,13 @@ def _upgrade_rpm_packages(ctx, config, remote, pkgs):
         base=base_url,
         proj=project,
         release=RELEASE,
-        dist_release=gitbuilder.dist_release,
+        dist_release=builder.dist_release,
     )
 
     # Upgrade the -release package
     args = ['sudo', 'rpm', '-Uv', release_rpm]
     remote.run(args=args)
-    uri = gitbuilder.uri_reference
+    uri = builder.uri_reference
     _yum_fix_repo_priority(remote, project, uri)
     _yum_fix_repo_host(remote, project)
     _yum_set_check_obsoletes(remote)
@@ -1116,12 +1120,6 @@ def ship_utilities(ctx, config):
 def get_flavor(config):
     """
     Determine the flavor to use.
-
-    Flavor tells us what gitbuilder to fetch the prebuilt software
-    from. It's a combination of possible keywords, in a specific
-    order, joined by dashes. It is used as a URL path name. If a
-    match is not found, the teuthology run fails. This is ugly,
-    and should be cleaned up at some point.
     """
     config = config or dict()
     flavor = config.get('flavor', 'basic')
